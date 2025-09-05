@@ -6,4 +6,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="IBApi" Version="1.0.0-preview-975" />
+    <PackageReference Include="System.Reactive" Version="6.0.2" />
+    <PackageReference Include="System.Reactive.Core" Version="6.0.2" />
+    <PackageReference Include="System.Reactive.Linq" Version="6.0.2" />
+  </ItemGroup>
+
 </Project>
