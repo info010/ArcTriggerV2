@@ -1,121 +1,154 @@
 ﻿using System;
-using System.Threading;
+using System.Threading.Tasks;
 using ArcTriggerV2.Core.Services;
-using ArcTriggerV2.Core.Utils;
+using ArcTriggerV2.Core.Models;
 using IBApi;
 
 class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
+    {
+        var svc = new ContractService();
+        svc.Connect("127.0.0.1", 7497, clientId: 1);
+
+        Console.Write("Sembol ara: ");
+        var symbol = Console.ReadLine()?.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(symbol)) symbol = "AAPL";
+
+        try
         {
-            Console.WriteLine("=== IBKR TWS API Multi-Order Test ===");
+            // 1) Arama
+            var matches = await svc.SearchSymbolsAsync(symbol);
+            if (matches.Count == 0) { Console.WriteLine("Sonuç yok."); return; }
 
-            var tradeService = new TradeService();
-            tradeService.Connect("127.0.0.1", 7497, 0);
+            Console.WriteLine($"\nBulunan semboller ({matches.Count}):");
+            for (int i = 0; i < matches.Count; i++)
+                Console.WriteLine($"[{i}] {matches[i].Symbol} | {matches[i].SecType} | ConId={matches[i].ConId}");
 
-            Thread.Sleep(2000); // nextValidId için bekle
+            // STK öncelikli seçim
+            var candidates = matches
+    .Where(m => m.ConId > 0)
+    .GroupBy(m => m.ConId)
+    .Select(g => g.First())
+    .ToList();
 
-            // ------------------------
-            // 1. LMT PUT
-            // ------------------------
-            var lmtPutContract = new OptionContractBuilder()
-                .WithSymbol("NVDA")
-                .WithExpiry("20251219")
-                .WithStrike(180)
-                .WithRight("P") // Put
-                .WithExchange("SMART")
-                .WithCurrency("USD")
-                .Build();
+            if (candidates.Count == 0)
+            {
+                Console.WriteLine("ConId içeren eşleşme yok.");
+                return;
+            }
 
-            var lmtPutOrder = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("LMT")
-                .WithQuantity(1)
-                .WithLimitPrice(6.50)
-                .WithTif("DAY")
-                .Build();
+            Console.WriteLine("\nConId seçim listesi:");
+            for (int i = 0; i < candidates.Count; i++)
+                Console.WriteLine($"[{i}] {candidates[i].Symbol} | {candidates[i].SecType} | ConId={candidates[i].ConId}");
 
-            int id1 = tradeService.PlaceOrder(lmtPutContract, lmtPutOrder);
+            Console.Write("Seçim (index, enter=0): ");
+            var pickIn = Console.ReadLine();
+            var pickIdx = (int.TryParse(pickIn, out var tmp) && tmp >= 0 && tmp < candidates.Count) ? tmp : 0;
 
-            // ------------------------
-            // 2. LMT CALL
-            // ------------------------
-            var lmtCallContract = new OptionContractBuilder()
-                .WithSymbol("NVDA")
-                .WithExpiry("20251219")
-                .WithStrike(180)
-                .WithRight("C") // Call
-                .WithExchange("SMART")
-                .WithCurrency("USD")
-                .Build();
+            var pick = candidates[pickIdx];
 
-            var lmtCallOrder = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("LMT")
-                .WithQuantity(1)
-                .WithLimitPrice(5.50)
-                .WithTif("DAY")
-                .Build();
+            // 2) Detay (underlying kontrolü)
+            var stkDetails = await svc.GetContractDetailsAsync(new Contract { ConId = pick.ConId });
+            if (stkDetails.Count == 0)
+            {
+                stkDetails = await svc.GetContractDetailsAsync(new Contract
+                {
+                    Symbol = pick.Symbol,
+                    SecType = pick.SecType,
+                    Currency = "USD",
+                    Exchange = "SMART"
+                });
+            }
+            if (stkDetails.Count == 0) { Console.WriteLine("Detay bulunamadı."); return; }
 
-            int id2 = tradeService.PlaceOrder(lmtCallContract, lmtCallOrder);
+            var stk = stkDetails[0];
+            var underConId = stk.ConId; // Opsiyon için underlying conid
 
-            // ------------------------
-            // 3. MKT PUT
-            // ------------------------
-            var mktPutContract = new OptionContractBuilder()
-                .WithSymbol("NVDA")
-                .WithExpiry("20251219")
-                .WithStrike(180)
-                .WithRight("P")
-                .WithExchange("SMART")
-                .WithCurrency("USD")
-                .Build();
+            Console.WriteLine($"\nUnderlyer: {stk.Symbol} {stk.SecType} ConId={underConId}, LongName={stk.LongName}");
 
-            var mktPutOrder = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("MKT")
-                .WithQuantity(1)
-                .WithTif("DAY")
-                .Build();
+            // 3) Opsiyon parametreleri (GetOptionParamsAsync)
+            Console.WriteLine("\nOpsiyon parametreleri getiriliyor...");
+            static string MapUnderlyingSecType(string secType) => secType switch
+            {
+                "STK" => "STK",
+                "ETF" => "STK",
+                "CFD" => "STK",   // zincir için çoğu durumda STK kullanılır
+                "FUT" => "FUT",
+                "IND" => "IND",
+                _ => "STK"
+            };
 
-            int id3 = tradeService.PlaceOrder(mktPutContract, mktPutOrder);
+            var uSecType = MapUnderlyingSecType(stk.SecType);
 
-            // ------------------------
-            // 4. MKT CALL
-            // ------------------------
-            var mktCallContract = new OptionContractBuilder()
-                .WithSymbol("NVDA")
-                .WithExpiry("20251219")
-                .WithStrike(180)
-                .WithRight("C")
-                .WithExchange("SMART")
-                .WithCurrency("USD")
-                .Build();
+            // Tüm borsalar için parametre al (futFopExchange="")
+            var chains = await svc.GetOptionParamsAsync(underConId, stk.Symbol, underlyingSecType: uSecType, futFopExchange: "");
+            if (chains.Count == 0) { Console.WriteLine("Opsiyon parametresi yok."); return; }
 
-            var mktCallOrder = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("MKT")
-                .WithQuantity(1)
-                .WithTif("DAY")
-                .Build();
+            // Exchange listesi
+            var exchanges = chains.Select(c => c.Exchange).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+            Console.WriteLine("\nBorsalar:");
+            for (int i = 0; i < exchanges.Count; i++) Console.WriteLine($"[{i}] {exchanges[i]}");
+            Console.Write("Borsa seç (enter=SMART): ");
+            var exSel = Console.ReadLine();
+            var exchange = string.IsNullOrWhiteSpace(exSel) ? "SMART"
+                           : (int.TryParse(exSel, out var exIdx) && exIdx >= 0 && exIdx < exchanges.Count ? exchanges[exIdx] : exchanges.First());
 
-            int id4 = tradeService.PlaceOrder(mktCallContract, mktCallOrder);
+            // Expiration set’i
+            var expirations = chains.SelectMany(c => c.Expirations).Distinct().ToList();
+            expirations.Sort(StringComparer.Ordinal); // YYYYMM veya YYYYMMDD lexicographically uygun
+            Console.WriteLine("\nVade listesi:");
+            for (int i = 0; i < expirations.Count; i++) Console.WriteLine($"[{i}] {expirations[i]}");
+            Console.Write("Vade seç (index, enter=0): ");
+            var vIn = Console.ReadLine();
+            var vIdx = (int.TryParse(vIn, out var vi) && vi >= 0 && vi < expirations.Count) ? vi : 0;
+            var expiry = expirations[vIdx];
 
-            // ------------------------
-            Console.WriteLine($"Orders gönderildi: {id1}, {id2}, {id3}, {id4}");
-            Console.WriteLine("10 saniye bekleniyor...");
-            Thread.Sleep(10000);
+            // Strikes
+            var allStrikes = chains.SelectMany(c => c.Strikes).Distinct().ToList();
+            allStrikes.Sort();
+            var sample = allStrikes.ToList();
+            Console.WriteLine("\nStrike örnekleri:");
+            for (int i = 0; i < sample.Count; i++) Console.WriteLine($"[{i}] {sample[i]}");
+            Console.Write("Strike seç (index, enter=orta): ");
+            var sIn = Console.ReadLine();
+            double strike;
+            if (int.TryParse(sIn, out var si) && si >= 0 && si < sample.Count) strike = sample[si];
+            else strike = sample.Count > 0 ? sample[sample.Count / 2] : allStrikes[allStrikes.Count / 2];
 
-            // Hepsini iptal et
-            tradeService.CancelOrder(id1);
-            tradeService.CancelOrder(id2);
-            tradeService.CancelOrder(id3);
-            tradeService.CancelOrder(id4);
+            Console.Write("Right seç (C/P, enter=C): ");
+            var rightIn = Console.ReadLine();
+            var right = string.IsNullOrWhiteSpace(rightIn) ? "C" : rightIn.Trim().ToUpperInvariant()[0] == 'P' ? "P" : "C";
 
-            Console.WriteLine("Tüm orderlar iptal edildi.");
-            Console.WriteLine("Çıkmak için tuşa basın...");
-            Console.ReadKey();
+            // Seçilen exchange için tradingClass/multiplier al
+            var chainForEx = chains.FirstOrDefault(c => string.Equals(c.Exchange, exchange, StringComparison.OrdinalIgnoreCase))
+                             ?? chains.First();
+            var tradingClass = chainForEx.TradingClass;
+            var multiplier = chainForEx.Multiplier;
 
-            tradeService.Disconnect();
+            Console.WriteLine($"\nSeçimler → Exch={exchange}, Expiry={expiry}, Right={right}, Strike={strike}, TC={tradingClass}, Mult={multiplier}");
+
+            // 4) Nihai conId çözümü (ResolveOptionConidAsync)
+            var optConId = await svc.ResolveOptionConidAsync(
+                symbol: stk.Symbol,
+                exchange: exchange,
+                right: right,
+                yyyymmdd: expiry,
+                strike: strike,
+                tradingClass: tradingClass,
+                multiplier: multiplier
+            );
+
+            Console.WriteLine($"\nNihai Option ConId: {optConId}");
+
+            // Opsiyon detayını da göster
+            var optDetails = await svc.GetContractDetailsAsync(new Contract { ConId = optConId });
+            foreach (var cd in optDetails)
+                Console.WriteLine($"OPT → {cd.Symbol} {cd.LocalSymbol} {cd.SecType} {cd.Exchange} {cd.Currency} ConId={cd.ConId} TC={cd.TradingClass} Mult={cd.Multiplier} LongName={cd.LongName}");
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Hata: {ex.Message}");
+        }
+    }
 }

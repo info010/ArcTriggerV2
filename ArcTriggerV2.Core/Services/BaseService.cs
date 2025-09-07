@@ -3,11 +3,13 @@ using IBApi;
 
 namespace ArcTriggerV2.Core.Services
 {
-    public abstract class BaseService : EWrapper
+    public abstract class BaseService : EWrapper, IAsyncDisposable
     {
         protected readonly EClientSocket Client;
         private readonly EReaderSignal _signal;
         private int _nextOrderId;
+
+        
 
         protected BaseService()
         {
@@ -162,12 +164,12 @@ namespace ArcTriggerV2.Core.Services
 
         }
 
-        public void contractDetails(int reqId, ContractDetails contractDetails)
+        public virtual void contractDetails(int reqId, ContractDetails contractDetails)
         {
 
         }
 
-        public void contractDetailsEnd(int reqId)
+        public virtual void contractDetailsEnd(int reqId)
         {
 
         }
@@ -317,12 +319,12 @@ namespace ArcTriggerV2.Core.Services
 
         }
 
-        public void securityDefinitionOptionParameter(int reqId, string exchange, int underlyingConId, string tradingClass, string multiplier, HashSet<string> expirations, HashSet<double> strikes)
+        public virtual void securityDefinitionOptionParameter(int reqId, string exchange, int underlyingConId, string tradingClass, string multiplier, HashSet<string> expirations, HashSet<double> strikes)
         {
 
         }
 
-        public void securityDefinitionOptionParameterEnd(int reqId)
+        public virtual void securityDefinitionOptionParameterEnd(int reqId)
         {
 
         }
@@ -337,7 +339,7 @@ namespace ArcTriggerV2.Core.Services
 
         }
 
-        public void symbolSamples(int reqId, ContractDescription[] contractDescriptions)
+        public virtual void symbolSamples(int reqId, ContractDescription[] contractDescriptions)
         {
 
         }
@@ -460,6 +462,11 @@ namespace ArcTriggerV2.Core.Services
         public void completedOrdersEnd()
         {
 
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            throw new NotImplementedException();
         }
 
         // ... diğer EWrapper metodları boş kalabilir
