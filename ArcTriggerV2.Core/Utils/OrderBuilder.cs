@@ -21,6 +21,36 @@ namespace ArcTriggerV2.Core.Utils
             return this;
         }
 
+        public OrderBuilder WithOpenClose(string oc)
+        {
+            _order.OpenClose = oc;
+            return this;
+        }
+           // "C" kapat
+        public OrderBuilder WithTriggerMethod(int m)
+        {
+            _order.TriggerMethod = m;
+            return this;
+        }
+         // 0=Default
+        public OrderBuilder WithTrailingPercent(double p)
+        {
+            _order.TrailingPercent = p;
+            return this;
+        }
+
+        public OrderBuilder WithTrailStopPrice(double p)
+        {
+            _order.TrailStopPrice = p;
+            return this;
+        }
+
+        public OrderBuilder WithAccount(string acct)
+        {
+            _order.Account = acct;
+            return this;
+        }
+
         public OrderBuilder WithOrderType(string type)
         {
             _order.OrderType = type;

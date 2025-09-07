@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using ArcTriggerV2.Core.Services;
 using ArcTriggerV2.Core.Models;
 using IBApi;
+using ArcTriggerV2.Core.Utils;
 
 class Program
 {
@@ -145,6 +146,80 @@ class Program
             var optDetails = await svc.GetContractDetailsAsync(new Contract { ConId = optConId });
             foreach (var cd in optDetails)
                 Console.WriteLine($"OPT → {cd.Symbol} {cd.LocalSymbol} {cd.SecType} {cd.Exchange} {cd.Currency} ConId={cd.ConId} TC={cd.TradingClass} Mult={cd.Multiplier} LongName={cd.LongName}");
+
+            var optByConId = new OptionContractBuilder()
+                .WithConId(optConId)
+                .WithExchange(exchange)
+                .Build();
+
+            int oid = svc.GetNextOrderId();               // BaseService içinden al
+            int parentId = oid;
+
+            var buy = new OrderBuilder()
+                .WithAction("BUY")
+                .WithOrderType("MKT")                // veya "LMT" + WithLimitPrice(...)
+                .WithQuantity(1)
+                .WithTif("DAY")
+                .Build();
+
+            // Take Profit (child LMT)
+            var tp = new OrderBuilder()
+                .WithAction("BUY")
+                .WithOrderType("LMT")
+                .WithQuantity(1)
+                .WithLimitPrice(2.50)
+                .WithTif("DAY")
+                .Build();
+
+            // Stop Loss (child STP)
+            var sl = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("MKT")
+                .WithQuantity(1)
+                .WithLimitPrice(2.50)
+                .WithTif("DAY")
+                .Build();
+
+
+            var stp = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOpenClose("C")        // pozisyon kapatma ise
+                .WithOrderType("STP")
+                .WithQuantity(1)
+                .WithStopPrice(1.20)       // AuxPrice = tetik
+                .WithTif("DAY")
+                .WithOutsideRth(true)      // gerekirse
+                .Build();
+
+            var stpLmt = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOpenClose("C")
+                .WithOrderType("STP LMT")
+                .WithQuantity(1)
+                .WithStopPrice(1.20)       // tetik
+                .WithLimitPrice(1.10)      // satış limiti
+                .WithTif("DAY")
+                .Build();
+
+            var trail = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOpenClose("C")
+                .WithOrderType("TRAIL")
+                .WithQuantity(1)
+                .WithTrailingPercent(5.0)  // veya WithTrailStopPrice(0.30)
+                .WithTif("DAY")
+                .Build();
+            // 3) Gönderim (TWS API)
+
+            var tradeService = new TradeService();
+            tradeService.Connect(clientId: 11);
+
+            Thread.Sleep(2000);
+
+            // tradeService.PlaceOrder(contract: optByConId, order: buy);
+            // tradeService.PlaceOrder(contract: optByConId, order: tp);
+            tradeService.PlaceOrder(contract: optByConId, order: trail);
+
         }
         catch (Exception ex)
         {
