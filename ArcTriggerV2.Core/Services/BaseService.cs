@@ -154,12 +154,12 @@ namespace ArcTriggerV2.Core.Services
 
         }
 
-        public void openOrder(int orderId, Contract contract, Order order, OrderState orderState)
+        public virtual void openOrder(int orderId, Contract contract, Order order, OrderState orderState)
         {
 
         }
 
-        public void openOrderEnd()
+        public virtual void openOrderEnd()
         {
 
         }
