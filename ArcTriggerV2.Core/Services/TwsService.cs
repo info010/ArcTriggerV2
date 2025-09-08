@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using IBApi;
 using ArcTriggerV2.Core.Abstractions; // SymbolMatch, ContractInfo, OptionChainParams modellerin buradaysa
 using ArcTriggerV2.Core.Models;
+using ArcTriggerV2.Core.Utils;
 
 namespace ArcTriggerV2.Core.Services
 {
@@ -121,83 +122,83 @@ namespace ArcTriggerV2.Core.Services
             await ack.Task.ConfigureAwait(false); // "Cancelled" status bekle
         }
 
-        public Task<int> PlaceProfitTakingAsync(Contract contract, int qty, double limitPrice, string tif = "DAY", string? account = null, bool close = true, CancellationToken ct = default)
+        // --- Basit SELL helper'lar ---
+
+        public Task<int> PlaceProfitTakingAsync(
+            Contract contract, int qty, double limitPrice,
+            string tif = "DAY", string? account = null, bool close = true, CancellationToken ct = default)
         {
-            var o = new Order
-            {
-                Action = "SELL",
-                OrderType = "LMT",
-                TotalQuantity = qty,
-                LmtPrice = limitPrice,
-                Tif = tif,
-                OpenClose = close ? "C" : "O",
-                Account = account ?? string.Empty
-            };
-            return PlaceOrderAsync(contract, o, ct);
+            var ob = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("LMT")
+                .WithQuantity(qty)
+                .WithLimitPrice(limitPrice)
+                .WithTif(tif)
+                .WithOpenClose(close ? "C" : "O");
+            if (!string.IsNullOrWhiteSpace(account)) ob.WithAccount(account);
+
+            return PlaceOrderAsync(contract, ob.Build(), ct);
         }
 
-        public Task<int> PlaceBreakevenAsync(Contract contract, int qty, string tif = "DAY", string? account = null, bool close = true, CancellationToken ct = default)
+        public Task<int> PlaceBreakevenAsync(
+            Contract contract, int qty,
+            string tif = "DAY", string? account = null, bool close = true, CancellationToken ct = default)
         {
-            var o = new Order
-            {
-                Action = "SELL",
-                OrderType = "MKT",
-                TotalQuantity = qty,
-                Tif = tif,
-                OpenClose = close ? "C" : "O",
-                Account = account ?? string.Empty
-            };
-            return PlaceOrderAsync(contract, o, ct);
+            var ob = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("MKT")
+                .WithQuantity(qty)
+                .WithTif(tif)
+                .WithOpenClose(close ? "C" : "O");
+            if (!string.IsNullOrWhiteSpace(account)) ob.WithAccount(account);
+
+            return PlaceOrderAsync(contract, ob.Build(), ct);
         }
 
-        public Task<int> PlaceStopMarketAsync(Contract contract, int qty, double stopTrigger, string tif = "DAY", bool outsideRth = false, string? account = null, bool close = true, CancellationToken ct = default)
+        public Task<int> PlaceStopMarketAsync(
+            Contract contract, int qty, double stopTrigger,
+            string tif = "DAY", bool outsideRth = false, string? account = null, bool close = true, CancellationToken ct = default)
         {
-            var o = new Order
-            {
-                Action = "SELL",
-                OrderType = "STP",
-                TotalQuantity = qty,
-                AuxPrice = stopTrigger,     // tetik
-                Tif = tif,
-                OutsideRth = outsideRth,
-                OpenClose = close ? "C" : "O",
-                Account = account ?? string.Empty
-            };
-            return PlaceOrderAsync(contract, o, ct);
+            var ob = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("STP")
+                .WithQuantity(qty)
+                .WithStopPrice(stopTrigger)     // AuxPrice
+                .WithTif(tif)
+                .WithOutsideRth(outsideRth)
+                .WithOpenClose(close ? "C" : "O");
+            if (!string.IsNullOrWhiteSpace(account)) ob.WithAccount(account);
+
+            return PlaceOrderAsync(contract, ob.Build(), ct);
         }
 
-        public Task<int> PlaceStopLimitAsync(Contract contract, int qty, double stopTrigger, double limitPrice, string tif = "DAY", bool outsideRth = false, string? account = null, bool close = true, CancellationToken ct = default)
+        public Task<int> PlaceStopLimitAsync(
+            Contract contract, int qty, double stopTrigger, double limitPrice,
+            string tif = "DAY", bool outsideRth = false, string? account = null, bool close = true, CancellationToken ct = default)
         {
-            var o = new Order
-            {
-                Action = "SELL",
-                OrderType = "STP LMT",
-                TotalQuantity = qty,
-                AuxPrice = stopTrigger,     // tetik
-                LmtPrice = limitPrice,      // satış limiti
-                Tif = tif,
-                OutsideRth = outsideRth,
-                OpenClose = close ? "C" : "O",
-                Account = account ?? string.Empty
-            };
-            return PlaceOrderAsync(contract, o, ct);
+            var ob = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("STP LMT")
+                .WithQuantity(qty)
+                .WithStopPrice(stopTrigger)     // AuxPrice
+                .WithLimitPrice(limitPrice)     // LmtPrice
+                .WithTif(tif)
+                .WithOutsideRth(outsideRth)
+                .WithOpenClose(close ? "C" : "O");
+            if (!string.IsNullOrWhiteSpace(account)) ob.WithAccount(account);
+
+            return PlaceOrderAsync(contract, ob.Build(), ct);
         }
 
-        // TwsService içine ekle
+        // --- Parent/Child (Breakout + protective stop) ---
 
         private static double R2(double x) => Math.Round(x, 2, MidpointRounding.AwayFromZero);
 
         public async Task<(int parentId, int childId)> PlaceBreakoutBuyStopLimitWithProtectiveStopAsync(
             int conId,
-            double triggerPrice,     // BUY tetik
-            double offset,           // limit = trigger + offset
-            double stopLoss,         // abs stop = trigger - stopLoss
-            int quantity,
-            string tif = "DAY",
-            bool outsideRth = false,
-            string? account = null,
-            double stopLimitOffset = 0.05,
-            CancellationToken ct = default)
+            double triggerPrice, double offset, double stopLoss,
+            int quantity, string tif = "DAY", bool outsideRth = false,
+            string? account = null, double stopLimitOffset = 0.05, CancellationToken ct = default)
         {
             var aux_stop = R2(triggerPrice);
             var limit_cap = R2(triggerPrice + offset);
@@ -206,88 +207,165 @@ namespace ArcTriggerV2.Core.Services
 
             var c = new Contract { ConId = conId, Exchange = "SMART", Currency = "USD" };
 
-            var parent = new Order
-            {
-                Action = "BUY",
-                OrderType = "STP LMT",
-                TotalQuantity = quantity,
-                AuxPrice = aux_stop,
-                LmtPrice = limit_cap,
-                Tif = tif,
-                OutsideRth = outsideRth,
-                Transmit = false,
-                Account = account ?? string.Empty
-            };
-            var parentId = await PlaceOrderAsync(c, parent, ct).ConfigureAwait(false);
+            var parentB = new OrderBuilder()
+                .WithAction("BUY")
+                .WithOrderType("STP LMT")
+                .WithQuantity(quantity)
+                .WithStopPrice(aux_stop)
+                .WithLimitPrice(limit_cap)
+                .WithTif(tif)
+                .WithOutsideRth(outsideRth)
+                .WithTransmit(false);
+            if (!string.IsNullOrWhiteSpace(account)) parentB.WithAccount(account);
 
-            var child = new Order
-            {
-                Action = "SELL",
-                OrderType = "STP LMT",
-                TotalQuantity = quantity,
-                AuxPrice = stop_abs,
-                LmtPrice = stop_limit,
-                Tif = tif,
-                OpenClose = "C",
-                ParentId = parentId,
-                Transmit = true,
-                Account = account ?? string.Empty
-            };
-            var childId = await PlaceOrderAsync(c, child, ct).ConfigureAwait(false);
+            var parentId = await PlaceOrderAsync(c, parentB.Build(), ct).ConfigureAwait(false);
+
+            var childB = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("STP LMT")
+                .WithQuantity(quantity)
+                .WithStopPrice(stop_abs)
+                .WithLimitPrice(stop_limit)
+                .WithTif(tif)
+                .WithOpenClose("C")
+                .WithParentId(parentId)
+                .WithTransmit(true);
+            if (!string.IsNullOrWhiteSpace(account)) childB.WithAccount(account);
+
+            var childId = await PlaceOrderAsync(c, childB.Build(), ct).ConfigureAwait(false);
 
             return (parentId, childId);
         }
 
         public async Task<(int parentId, int childId)> PlaceMarketBuyWithProtectiveStopAsync(
             int conId,
-            double triggerPrice,     // sadece stop hesap için kullanılır
-            double stopLoss,         // abs stop = trigger - stopLoss
-            int quantity,
-            string tif = "DAY",
-            bool outsideRth = false,
-            string? account = null,
-            double stopLimitOffset = 0.05,
-            CancellationToken ct = default)
+            double triggerPrice, double stopLoss,
+            int quantity, string tif = "DAY", bool outsideRth = false,
+            string? account = null, double stopLimitOffset = 0.05, CancellationToken ct = default)
         {
             var stop_abs = R2(triggerPrice - stopLoss);
             var stop_limit = R2(stop_abs - stopLimitOffset);
 
             var c = new Contract { ConId = conId, Exchange = "SMART", Currency = "USD" };
 
-            var parent = new Order
-            {
-                Action = "BUY",
-                OrderType = "MKT",
-                TotalQuantity = quantity,
-                Tif = tif,
-                OutsideRth = outsideRth,
-                Transmit = false,
-                Account = account ?? string.Empty
-            };
-            var parentId = await PlaceOrderAsync(c, parent, ct).ConfigureAwait(false);
+            var parentB = new OrderBuilder()
+                .WithAction("BUY")
+                .WithOrderType("MKT")
+                .WithQuantity(quantity)
+                .WithTif(tif)
+                .WithOutsideRth(outsideRth)
+                .WithTransmit(false);
+            if (!string.IsNullOrWhiteSpace(account)) parentB.WithAccount(account);
 
-            var child = new Order
-            {
-                Action = "SELL",
-                OrderType = "STP LMT",
-                TotalQuantity = quantity,
-                AuxPrice = stop_abs,
-                LmtPrice = stop_limit,
-                Tif = tif,
-                OpenClose = "C",
-                ParentId = parentId,
-                Transmit = true,
-                Account = account ?? string.Empty
-            };
-            var childId = await PlaceOrderAsync(c, child, ct).ConfigureAwait(false);
+            var parentId = await PlaceOrderAsync(c, parentB.Build(), ct).ConfigureAwait(false);
+
+            var childB = new OrderBuilder()
+                .WithAction("SELL")
+                .WithOrderType("STP LMT")
+                .WithQuantity(quantity)
+                .WithStopPrice(stop_abs)
+                .WithLimitPrice(stop_limit)
+                .WithTif(tif)
+                .WithOpenClose("C")
+                .WithParentId(parentId)
+                .WithTransmit(true);
+            if (!string.IsNullOrWhiteSpace(account)) childB.WithAccount(account);
+
+            var childId = await PlaceOrderAsync(c, childB.Build(), ct).ConfigureAwait(false);
 
             return (parentId, childId);
         }
 
+        // Snapshot
+
+        private int _nextTickerId = 1;
+        private readonly ConcurrentDictionary<int, MarketData> _marketData = new();
+
+        // Her tick’te çalışacak event
+        public event Action<MarketData>? OnMarketData;
+
+        // ---- Market Data API ----
+        public int RequestMarketData(
+            int conId, string secType = "STK", string exchange = "SMART",
+            string currency = "USD", int marketDataType = 3
+        ) // default: delayed (3)
+        {
+            Client.reqMarketDataType(marketDataType);
+            int tickerId = Interlocked.Increment(ref _nextTickerId);
+            var contract = new Contract { ConId = conId, SecType = secType, Exchange = exchange, Currency = currency };
+            Client.reqMktData(tickerId, contract, string.Empty, false, false, null);
+            _marketData[tickerId] = new MarketData { ConId = conId, TickerId = tickerId };
+            return tickerId;
+        }
+
+        public int RequestMarketDataBySymbol(
+            string symbol, string secType = "STK", string exchange = "SMART",
+            string currency = "USD", int marketDataType = 3)
+        {
+            Client.reqMarketDataType(marketDataType);
+            int tickerId = Interlocked.Increment(ref _nextTickerId);
+            var contract = new Contract { Symbol = symbol, SecType = secType, Exchange = exchange, Currency = currency };
+            Client.reqMktData(tickerId, contract, string.Empty, false, false, null);
+            _marketData[tickerId] = new MarketData { TickerId = tickerId };
+            return tickerId;
+        }
+
+        public MarketData? GetLatestData(int tickerId) =>
+            _marketData.TryGetValue(tickerId, out var d) ? d : null;
+
+        public void CancelMarketData(int tickerId)
+        {
+            if (_marketData.ContainsKey(tickerId))
+            {
+                Client.cancelMktData(tickerId);
+                _marketData.TryRemove(tickerId, out _);
+            }
+        }
 
         // =======================
         // EWrapper overrides
         // =======================
+        public override void tickPrice(int tickerId, int field, double price, TickAttrib attribs)
+        {
+            if (price <= 0) return;
+
+            if (!_marketData.TryGetValue(tickerId, out var d))
+                return;
+
+            switch (field)
+            {
+                case 1: d.Bid = price; break;
+                case 2: d.Ask = price; break;
+                case 4: d.Last = price; break;
+                case 6: d.High = price; break;
+                case 7: d.Low = price; break;
+                case 9: d.Close = price; break;
+                case 14: d.Open = price; break;
+            }
+
+            d.Timestamp = DateTime.UtcNow;
+
+            Console.WriteLine(
+                $"[{d.Timestamp:HH:mm:ss}] Tick {field} Price={price} " +
+                $"ConId={d.ConId} Last={d.Last} Bid={d.Bid} Ask={d.Ask} O={d.Open} H={d.High} L={d.Low} C={d.Close}"
+            );
+        }
+
+        public override void tickSize(int tickerId, int field, int size)
+        {
+            if (!_marketData.TryGetValue(tickerId, out var d)) return;
+            if (size <= 0) return;
+
+            if (field == 0 || field == 3)  // Bid/Ask Size
+                d.Volume = size;
+
+            if (field == 8) // Volume
+                d.Volume = size;
+
+            d.Timestamp = DateTime.UtcNow;
+
+            Console.WriteLine($"[{d.Timestamp:HH:mm:ss}] TickSize {field} Size={size}");
+        }
 
         public override void symbolSamples(int reqId, ContractDescription[] descs)
         {

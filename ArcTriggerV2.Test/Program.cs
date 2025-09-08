@@ -9,221 +9,174 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        var svc = new ContractService();
-        svc.Connect("127.0.0.1", 7497, clientId: 1);
 
-        Console.Write("Sembol ara: ");
-        var symbol = Console.ReadLine()?.Trim().ToUpperInvariant();
-        if (string.IsNullOrWhiteSpace(symbol)) symbol = "AAPL";
+        var tws = new TwsService();
 
-        try
+        tws.OnMarketData += (data) =>
         {
-            // 1) Arama
-            var matches = await svc.SearchSymbolsAsync(symbol);
-            if (matches.Count == 0) { Console.WriteLine("Sonuç yok."); return; }
-
-            Console.WriteLine($"\nBulunan semboller ({matches.Count}):");
-            for (int i = 0; i < matches.Count; i++)
-                Console.WriteLine($"[{i}] {matches[i].Symbol} | {matches[i].SecType} | ConId={matches[i].ConId}");
-
-            // STK öncelikli seçim
-            var candidates = matches
-    .Where(m => m.ConId > 0)
-    .GroupBy(m => m.ConId)
-    .Select(g => g.First())
-    .ToList();
-
-            if (candidates.Count == 0)
-            {
-                Console.WriteLine("ConId içeren eşleşme yok.");
-                return;
-            }
-
-            Console.WriteLine("\nConId seçim listesi:");
-            for (int i = 0; i < candidates.Count; i++)
-                Console.WriteLine($"[{i}] {candidates[i].Symbol} | {candidates[i].SecType} | ConId={candidates[i].ConId}");
-
-            Console.Write("Seçim (index, enter=0): ");
-            var pickIn = Console.ReadLine();
-            var pickIdx = (int.TryParse(pickIn, out var tmp) && tmp >= 0 && tmp < candidates.Count) ? tmp : 0;
-
-            var pick = candidates[pickIdx];
-
-            // 2) Detay (underlying kontrolü)
-            var stkDetails = await svc.GetContractDetailsAsync(new Contract { ConId = pick.ConId });
-            if (stkDetails.Count == 0)
-            {
-                stkDetails = await svc.GetContractDetailsAsync(new Contract
-                {
-                    Symbol = pick.Symbol,
-                    SecType = pick.SecType,
-                    Currency = "USD",
-                    Exchange = "SMART"
-                });
-            }
-            if (stkDetails.Count == 0) { Console.WriteLine("Detay bulunamadı."); return; }
-
-            var stk = stkDetails[0];
-            var underConId = stk.ConId; // Opsiyon için underlying conid
-
-            Console.WriteLine($"\nUnderlyer: {stk.Symbol} {stk.SecType} ConId={underConId}, LongName={stk.LongName}");
-
-            // 3) Opsiyon parametreleri (GetOptionParamsAsync)
-            Console.WriteLine("\nOpsiyon parametreleri getiriliyor...");
-            static string MapUnderlyingSecType(string secType) => secType switch
-            {
-                "STK" => "STK",
-                "ETF" => "STK",
-                "CFD" => "STK",   // zincir için çoğu durumda STK kullanılır
-                "FUT" => "FUT",
-                "IND" => "IND",
-                _ => "STK"
-            };
-
-            var uSecType = MapUnderlyingSecType(stk.SecType);
-
-            // Tüm borsalar için parametre al (futFopExchange="")
-            var chains = await svc.GetOptionParamsAsync(underConId, stk.Symbol, underlyingSecType: uSecType, futFopExchange: "");
-            if (chains.Count == 0) { Console.WriteLine("Opsiyon parametresi yok."); return; }
-
-            // Exchange listesi
-            var exchanges = chains.Select(c => c.Exchange).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
-            Console.WriteLine("\nBorsalar:");
-            for (int i = 0; i < exchanges.Count; i++) Console.WriteLine($"[{i}] {exchanges[i]}");
-            Console.Write("Borsa seç (enter=SMART): ");
-            var exSel = Console.ReadLine();
-            var exchange = string.IsNullOrWhiteSpace(exSel) ? "SMART"
-                           : (int.TryParse(exSel, out var exIdx) && exIdx >= 0 && exIdx < exchanges.Count ? exchanges[exIdx] : exchanges.First());
-
-            // Expiration set’i
-            var expirations = chains.SelectMany(c => c.Expirations).Distinct().ToList();
-            expirations.Sort(StringComparer.Ordinal); // YYYYMM veya YYYYMMDD lexicographically uygun
-            Console.WriteLine("\nVade listesi:");
-            for (int i = 0; i < expirations.Count; i++) Console.WriteLine($"[{i}] {expirations[i]}");
-            Console.Write("Vade seç (index, enter=0): ");
-            var vIn = Console.ReadLine();
-            var vIdx = (int.TryParse(vIn, out var vi) && vi >= 0 && vi < expirations.Count) ? vi : 0;
-            var expiry = expirations[vIdx];
-
-            // Strikes
-            var allStrikes = chains.SelectMany(c => c.Strikes).Distinct().ToList();
-            allStrikes.Sort();
-            var sample = allStrikes.ToList();
-            Console.WriteLine("\nStrike örnekleri:");
-            for (int i = 0; i < sample.Count; i++) Console.WriteLine($"[{i}] {sample[i]}");
-            Console.Write("Strike seç (index, enter=orta): ");
-            var sIn = Console.ReadLine();
-            double strike;
-            if (int.TryParse(sIn, out var si) && si >= 0 && si < sample.Count) strike = sample[si];
-            else strike = sample.Count > 0 ? sample[sample.Count / 2] : allStrikes[allStrikes.Count / 2];
-
-            Console.Write("Right seç (C/P, enter=C): ");
-            var rightIn = Console.ReadLine();
-            var right = string.IsNullOrWhiteSpace(rightIn) ? "C" : rightIn.Trim().ToUpperInvariant()[0] == 'P' ? "P" : "C";
-
-            // Seçilen exchange için tradingClass/multiplier al
-            var chainForEx = chains.FirstOrDefault(c => string.Equals(c.Exchange, exchange, StringComparison.OrdinalIgnoreCase))
-                             ?? chains.First();
-            var tradingClass = chainForEx.TradingClass;
-            var multiplier = chainForEx.Multiplier;
-
-            Console.WriteLine($"\nSeçimler → Exch={exchange}, Expiry={expiry}, Right={right}, Strike={strike}, TC={tradingClass}, Mult={multiplier}");
-
-            // 4) Nihai conId çözümü (ResolveOptionConidAsync)
-            var optConId = await svc.ResolveOptionConidAsync(
-                symbol: stk.Symbol,
-                exchange: exchange,
-                right: right,
-                yyyymmdd: expiry,
-                strike: strike,
-                tradingClass: tradingClass,
-                multiplier: multiplier
+            Console.WriteLine(
+                $"[{data.Timestamp:HH:mm:ss.fff}] {data.TickerId} " +
+                $"Last={data.Last} Bid={data.Bid} Ask={data.Ask} Vol={data.Volume}"
             );
+        };
 
-            Console.WriteLine($"\nNihai Option ConId: {optConId}");
+        await tws.ConnectAsync("127.0.0.1", 7497, 0);
+        int aaplId = tws.RequestMarketData(265598, secType: "STK", marketDataType: 3);
 
-            // Opsiyon detayını da göster
-            var optDetails = await svc.GetContractDetailsAsync(new Contract { ConId = optConId });
-            foreach (var cd in optDetails)
-                Console.WriteLine($"OPT → {cd.Symbol} {cd.LocalSymbol} {cd.SecType} {cd.Exchange} {cd.Currency} ConId={cd.ConId} TC={cd.TradingClass} Mult={cd.Multiplier} LongName={cd.LongName}");
+        // TSLA (NASDAQ)
+        int tslaId = tws.RequestMarketData(76792991, secType: "STK", marketDataType: 3);
 
-            var optByConId = new OptionContractBuilder()
-                .WithConId(optConId)
-                .WithExchange(exchange)
-                .Build();
+        // GOOGL (NASDAQ)
+        int googlId = tws.RequestMarketData(208813719, secType: "STK", marketDataType: 3);
+        // bekle
 
-            int oid = svc.GetNextOrderId();               // BaseService içinden al
-            int parentId = oid;
-
-            var buy = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("MKT")                // veya "LMT" + WithLimitPrice(...)
-                .WithQuantity(1)
-                .WithTif("DAY")
-                .Build();
-
-            // Take Profit (child LMT)
-            var tp = new OrderBuilder()
-                .WithAction("BUY")
-                .WithOrderType("LMT")
-                .WithQuantity(1)
-                .WithLimitPrice(2.50)
-                .WithTif("DAY")
-                .Build();
-
-            // Stop Loss (child STP)
-            var sl = new OrderBuilder()
-                .WithAction("SELL")
-                .WithOrderType("MKT")
-                .WithQuantity(1)
-                .WithLimitPrice(2.50)
-                .WithTif("DAY")
-                .Build();
+        Thread.Sleep(300000);
 
 
-            var stp = new OrderBuilder()
-                .WithAction("SELL")
-                .WithOpenClose("C")        // pozisyon kapatma ise
-                .WithOrderType("STP")
-                .WithQuantity(1)
-                .WithStopPrice(1.20)       // AuxPrice = tetik
-                .WithTif("DAY")
-                .WithOutsideRth(true)      // gerekirse
-                .Build();
+        tws.CancelMarketData(aaplId);
+        tws.CancelMarketData(tslaId);
+        tws.CancelMarketData(googlId);
 
-            var stpLmt = new OrderBuilder()
-                .WithAction("SELL")
-                .WithOpenClose("C")
-                .WithOrderType("STP LMT")
-                .WithQuantity(1)
-                .WithStopPrice(1.20)       // tetik
-                .WithLimitPrice(1.10)      // satış limiti
-                .WithTif("DAY")
-                .Build();
+        tws.Disconnect();
 
-            var trail = new OrderBuilder()
-                .WithAction("SELL")
-                .WithOpenClose("C")
-                .WithOrderType("TRAIL")
-                .WithQuantity(1)
-                .WithTrailingPercent(5.0)  // veya WithTrailStopPrice(0.30)
-                .WithTif("DAY")
-                .Build();
-            // 3) Gönderim (TWS API)
+        // Console.Write("Sembol ara: ");
+        // var symbol = Console.ReadLine()?.Trim().ToUpperInvariant();
+        // if (string.IsNullOrWhiteSpace(symbol)) symbol = "AAPL";
 
-            var tradeService = new TradeService();
-            tradeService.Connect(clientId: 11);
+        // try
+        // {
+        //     // 1) Arama
+        //     var matches = await svc.SearchSymbolsAsync(symbol);
+        //     if (matches.Count == 0) { Console.WriteLine("Sonuç yok."); return; }
 
-            Thread.Sleep(2000);
+        //     Console.WriteLine($"\nBulunan semboller ({matches.Count}):");
+        //     for (int i = 0; i < matches.Count; i++)
+        //         Console.WriteLine($"[{i}] {matches[i].Symbol} | {matches[i].SecType} | ConId={matches[i].ConId}");
 
-            // tradeService.PlaceOrder(contract: optByConId, order: buy);
-            // tradeService.PlaceOrder(contract: optByConId, order: tp);
-            tradeService.PlaceOrder(contract: optByConId, order: trail);
+        //     // STK öncelikli seçim
+        //     var candidates = matches
+        //         .Where(m => m.ConId > 0)
+        //         .GroupBy(m => m.ConId)
+        //         .Select(g => g.First())
+        //         .ToList();
 
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Hata: {ex.Message}");
-        }
+        //     if (candidates.Count == 0)
+        //     {
+        //         Console.WriteLine("ConId içeren eşleşme yok.");
+        //         return;
+        //     }
+
+        //     Console.WriteLine("\nConId seçim listesi:");
+        //     for (int i = 0; i < candidates.Count; i++)
+        //         Console.WriteLine($"[{i}] {candidates[i].Symbol} | {candidates[i].SecType} | ConId={candidates[i].ConId}");
+
+        //     Console.Write("Seçim (index, enter=0): ");
+        //     var pickIn = Console.ReadLine();
+        //     var pickIdx = (int.TryParse(pickIn, out var tmp) && tmp >= 0 && tmp < candidates.Count) ? tmp : 0;
+
+        //     var pick = candidates[pickIdx];
+
+        //     // 2) Detay (underlying kontrolü)
+        //     var stkDetails = await svc.GetContractDetailsAsync(new Contract { ConId = pick.ConId });
+        //     if (stkDetails.Count == 0)
+        //     {
+        //         stkDetails = await svc.GetContractDetailsAsync(new Contract
+        //         {
+        //             Symbol = pick.Symbol,
+        //             SecType = pick.SecType,
+        //             Currency = "USD",
+        //             Exchange = "SMART"
+        //         });
+        //     }
+        //     if (stkDetails.Count == 0) { Console.WriteLine("Detay bulunamadı."); return; }
+
+        //     var stk = stkDetails[0];
+        //     var underConId = stk.ConId; // Opsiyon için underlying conid
+
+        //     Console.WriteLine($"\nUnderlyer: {stk.Symbol} {stk.SecType} ConId={underConId}, LongName={stk.LongName}");
+
+        //     // 3) Opsiyon parametreleri (GetOptionParamsAsync)
+        //     Console.WriteLine("\nOpsiyon parametreleri getiriliyor...");
+        //     static string MapUnderlyingSecType(string secType) => secType switch
+        //     {
+        //         "STK" => "STK",
+        //         "ETF" => "STK",
+        //         "CFD" => "STK",   // zincir için çoğu durumda STK kullanılır
+        //         "FUT" => "FUT",
+        //         "IND" => "IND",
+        //         _ => "STK"
+        //     };
+
+        //     var uSecType = MapUnderlyingSecType(stk.SecType);
+
+        //     // Tüm borsalar için parametre al (futFopExchange="")
+        //     var chains = await svc.GetOptionParamsAsync(underConId, stk.Symbol, underlyingSecType: uSecType, futFopExchange: "");
+        //     if (chains.Count == 0) { Console.WriteLine("Opsiyon parametresi yok."); return; }
+
+        //     // Exchange listesi
+        //     var exchanges = chains.Select(c => c.Exchange).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+        //     Console.WriteLine("\nBorsalar:");
+        //     for (int i = 0; i < exchanges.Count; i++) Console.WriteLine($"[{i}] {exchanges[i]}");
+        //     Console.Write("Borsa seç (enter=SMART): ");
+        //     var exSel = Console.ReadLine();
+        //     var exchange = string.IsNullOrWhiteSpace(exSel) ? "SMART"
+        //                    : (int.TryParse(exSel, out var exIdx) && exIdx >= 0 && exIdx < exchanges.Count ? exchanges[exIdx] : exchanges.First());
+
+        //     // Expiration set’i
+        //     var expirations = chains.SelectMany(c => c.Expirations).Distinct().ToList();
+        //     expirations.Sort(StringComparer.Ordinal); // YYYYMM veya YYYYMMDD lexicographically uygun
+        //     Console.WriteLine("\nVade listesi:");
+        //     for (int i = 0; i < expirations.Count; i++) Console.WriteLine($"[{i}] {expirations[i]}");
+        //     Console.Write("Vade seç (index, enter=0): ");
+        //     var vIn = Console.ReadLine();
+        //     var vIdx = (int.TryParse(vIn, out var vi) && vi >= 0 && vi < expirations.Count) ? vi : 0;
+        //     var expiry = expirations[vIdx];
+
+        //     // Strikes
+        //     var allStrikes = chains.SelectMany(c => c.Strikes).Distinct().ToList();
+        //     allStrikes.Sort();
+        //     var sample = allStrikes.ToList();
+        //     Console.WriteLine("\nStrike örnekleri:");
+        //     for (int i = 0; i < sample.Count; i++) Console.WriteLine($"[{i}] {sample[i]}");
+        //     Console.Write("Strike seç (index, enter=orta): ");
+        //     var sIn = Console.ReadLine();
+        //     double strike;
+        //     if (int.TryParse(sIn, out var si) && si >= 0 && si < sample.Count) strike = sample[si];
+        //     else strike = sample.Count > 0 ? sample[sample.Count / 2] : allStrikes[allStrikes.Count / 2];
+
+        //     Console.Write("Right seç (C/P, enter=C): ");
+        //     var rightIn = Console.ReadLine();
+        //     var right = string.IsNullOrWhiteSpace(rightIn) ? "C" : rightIn.Trim().ToUpperInvariant()[0] == 'P' ? "P" : "C";
+
+        //     // Seçilen exchange için tradingClass/multiplier al
+        //     var chainForEx = chains.FirstOrDefault(c => string.Equals(c.Exchange, exchange, StringComparison.OrdinalIgnoreCase))
+        //                      ?? chains.First();
+        //     var tradingClass = chainForEx.TradingClass;
+        //     var multiplier = chainForEx.Multiplier;
+
+        //     Console.WriteLine($"\nSeçimler → Exch={exchange}, Expiry={expiry}, Right={right}, Strike={strike}, TC={tradingClass}, Mult={multiplier}");
+
+        //     // 4) Nihai conId çözümü (ResolveOptionConidAsync)
+        //     var optConId = await svc.ResolveOptionConidAsync(
+        //         symbol: stk.Symbol,
+        //         exchange: exchange,
+        //         right: right,
+        //         yyyymmdd: expiry,
+        //         strike: strike,
+        //         tradingClass: tradingClass,
+        //         multiplier: multiplier
+        //     );
+
+        //     Console.WriteLine($"\nNihai Option ConId: {optConId}");
+
+        //     // Opsiyon detayını da göster
+        //     var optDetails = await svc.GetContractDetailsAsync(new Contract { ConId = optConId });
+        //     foreach (var cd in optDetails)
+        //         Console.WriteLine($"OPT → {cd.Symbol} {cd.LocalSymbol} {cd.SecType} {cd.Exchange} {cd.Currency} ConId={cd.ConId} TC={cd.TradingClass} Mult={cd.Multiplier} LongName={cd.LongName}");
+        // }
+        // catch (Exception ex)
+        // {
+        //     Console.WriteLine($"Hata: {ex.Message}");
+        // }
     }
 }

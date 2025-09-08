@@ -5,11 +5,12 @@ namespace ArcTriggerV2.Core.Services
 {
     public abstract class BaseService : EWrapper, IAsyncDisposable
     {
-        protected readonly EClientSocket Client;
+        public readonly EClientSocket Client;
         private readonly EReaderSignal _signal;
         private int _nextOrderId;
-
-        
+        protected EReader? _reader;
+        private Thread? _readerThread;
+        private TaskCompletionSource<int>? _nextOrderIdTcs;
 
         protected BaseService()
         {
@@ -17,23 +18,39 @@ namespace ArcTriggerV2.Core.Services
             Client = new EClientSocket(this, _signal);
         }
 
-        public void Connect(string host = "127.0.0.1", int port = 7497, int clientId = 0)
+        public void Connect(string host, int port, int clientId)
         {
-            Client.eConnect(host, port, clientId);
+            Client.eConnect(host, port, clientId, false);
+            if (!Client.IsConnected()) throw new Exception("TWS'e bağlanamadı.");
 
-            var reader = new EReader(Client, _signal);
-            reader.Start();
+            _reader = new EReader(Client, _signal);
+            _reader.Start();
 
-            new Thread(() =>
+            _readerThread = new Thread(() =>
             {
                 while (Client.IsConnected())
                 {
                     _signal.waitForSignal();
-                    reader.processMsgs();
+                    try { _reader.processMsgs(); }
+                    catch { /* swallow to avoid crash */ }
                 }
             })
-            { IsBackground = true }.Start();
+            { IsBackground = true, Name = "IB_EReader" };
+            _readerThread.Start();
         }
+
+        public async Task ConnectAsync(string host, int port, int clientId, CancellationToken ct = default)
+        {
+            _nextOrderIdTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Connect(host, port, clientId);
+
+            // Paper için gecikmeli-donmuş tickler (Delayed-Frozen)
+            Client.reqMarketDataType(3);
+
+            using var _ = ct.Register(() => _nextOrderIdTcs!.TrySetCanceled(ct));
+            await _nextOrderIdTcs!.Task.ConfigureAwait(false); // nextValidId bekle
+        }
+
 
         public void Disconnect()
         {
@@ -49,8 +66,8 @@ namespace ArcTriggerV2.Core.Services
 
         public virtual void nextValidId(int orderId)
         {
-            _nextOrderId = orderId;
-            Console.WriteLine($"Next valid order id: {_nextOrderId}");
+            Console.WriteLine($"Next valid order id: {orderId}");
+            _nextOrderIdTcs?.TrySetResult(orderId);
         }
 
         public virtual void error(Exception e) =>
@@ -209,7 +226,7 @@ namespace ArcTriggerV2.Core.Services
 
         }
 
-        public void marketDataType(int reqId, int marketDataType)
+        public virtual void marketDataType(int reqId, int marketDataType)
         {
 
         }
