@@ -28,12 +28,18 @@ namespace ArcTriggerV2.Core.Services
         private readonly ConcurrentDictionary<int, TaskCompletionSource<string>> _cancelAck = new();
 
         // ---- Bağlantı
+        private bool isConnected = false;
         public async Task ConnectAsync(string host, int port, int clientId, CancellationToken ct = default)
         {
-            _nextOrderIdTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            Connect(host, port, clientId);
-            using var _ = ct.Register(() => _nextOrderIdTcs.TrySetCanceled(ct));
-            await _nextOrderIdTcs.Task.ConfigureAwait(false); // nextValidId bekle
+            if (isConnected==false)
+            {
+                _nextOrderIdTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                Connect(host, port, clientId);
+                using var _ = ct.Register(() => _nextOrderIdTcs.TrySetCanceled(ct));
+                await _nextOrderIdTcs.Task.ConfigureAwait(false); // nextValidId bekle
+                isConnected = true;
+            }
+          
         }
 
         public override void nextValidId(int orderId)
